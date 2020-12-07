@@ -1,0 +1,170 @@
+// AccessKey Setting
+//   1. AWS Access Key ID (string) set to custom function or Local variable
+//      Custom function: AWS.AccessKeyID()
+//      Local variable: $AWS_AccessKeyID
+//
+//   2. AWS Secret Access Key (string) set to custom function or Local variable
+//      Custom function: AWS.SecretAccessKey()
+//      Local variable: $AWS_SecretAccessKey
+//
+// All arguments refer to $AWS4Options(json)
+//   {
+//     -- Required Items
+//     "service":    "string"  -- "s3"
+//     "scheme":     "https",  -- (default: "https")
+//     "host":       "string", -- "s3.amazonmws.com"
+//     "path":       "string", -- String starting with a "/" (default: "/")
+//     "query":      "string", -- "?" Not including (default: "")
+//     "region":     "string", -- "ap-northeast-1"
+//     "httpMethod": "GET",    -- (default: "GET")
+//
+//     -- Options
+//     "httpHeaderJSON": {...} -- to curl `--head` option: `{"Content-MD5":"1B2M2Y8AsgTpgAmY7PhCfg==","Content-Type":"text/plain","x-amz-meta-mode":"33188"}`
+//     "file": null, -- Base64Encoded Object: `Base64EncodeRFC(4648; $file)` (default: null)
+//     "createContentSha256HexHeader": true, -- When true, "X-Amz-Content-Sha256" will be automatically generated and added to the header. (default: true)
+//     "timestampFaceOverride": null, -- Force the timestamp to be rewritten For debugging (default: null)
+//     "curl--FM-return-container-variable": false, -- Script always returns the value as an object (default: false)
+//   }
+//
+// Result (cURL Options)
+// => "-X GET
+//   --header \"Authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Sig  nature=9030e668e1db62678abb95ada0ecae91a7c7adad58d84aee77c90ed5402fae2d\"
+//   --header \"Host: iam.amazonaws.com\"
+//   --header \"X-Amz-Content-Sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"
+//   --header \"X-Amz-Date: 20150830T123600Z\"
+//   --dump-header $responseHeader"
+//
+// Licensed under the BSD license. See https://github.com/hazi/FileMaker-AwsSignature/blob/master/LICENSE
+Let([
+  // ARGV
+  ~service        = JSONGetElement($AWS4Options; "service");
+  ~host           = JSONGetElement($AWS4Options; "host");
+  ~path           = JSONGetElement($AWS4Options; "path");
+  ~path           = If(IsEmpty(~path); "/"; ~path);
+  ~query          = JSONGetElement($AWS4Options; "query");
+  ~region         = JSONGetElement($AWS4Options; "region");
+  ~httpMethod     = JSONGetElement($AWS4Options; "httpMethod");
+  ~httpMethod     = If(IsEmpty(~httpMethod); "GET"; ~httpMethod);
+  ~httpHeaderJSON = JSONGetElement($AWS4Options; "httpHeaderJSON");
+  ~file           = JSONGetElement($AWS4Options; "file");
+  ~file           = If(not IsEmpty(~file); Base64Decode(~file; "file"));
+
+  ~createContentSha256HexHeader = JSONGetElement($AWS4Options; "createContentSha256HexHeader");
+  ~forceSaveAsObject            = JSONGetElement($AWS4Options; "curl--FM-return-container-variable");
+  ~timestampFaceOverride        = JSONGetElement($AWS4Options; "timestampFaceOverride");
+
+  // Timesmtamp
+  ~requestTimestamp = GetAsTimestamp(Get(CurrentTimeUTCMilliseconds) / 1000);
+  ~requestTimestamp = If(~timestampFaceOverride; GetAsTimestamp(~timestampFaceOverride); ~requestTimestamp);
+  ~requestData =
+    Year(~requestTimestamp)
+    & Right("0" & Month(~requestTimestamp); 2)
+    & Right("0" & Day(~requestTimestamp); 2);
+  ~requestDateTime =
+    ~requestData
+    & "T"
+    & Right("0" & Hour(~requestTimestamp); 2)
+    & Right("0" & Minute(~requestTimestamp); 2)
+    & Right("0" & Int(Seconds(~requestTimestamp)); 2)
+    & "Z";
+
+  ~contentSha256Hex = Lower(HexEncode(CryptDigest(~file; "SHA256")));
+
+  // Create HTTP Header JSON
+  ~httpHeaderJSON = JSONSetElement(~httpHeaderJSON; "Host"; ~host; JSONString);
+  ~httpHeaderJSON = If(~createContentSha256HexHeader; JSONSetElement(~httpHeaderJSON; "X-Amz-Content-Sha256"; ~contentSha256Hex; JSONString); ~httpHeaderJSON);
+  ~httpHeaderJSON = JSONSetElement(~httpHeaderJSON; "X-Amz-Date"; ~requestDateTime; JSONString);
+
+  // Create CanonicalRequest
+  ~httpHeaderJSONKeys = SortValues(JSONListKeys(~httpHeaderJSON; ""));
+  ~canonicalHeaders = While(
+    [ ~i = 1;
+      ~result = "";
+      ~keys = ~httpHeaderJSONKeys
+    ];
+    ~i <= ValueCount(~keys);
+    [ nowKey = GetValue(~keys; ~i);
+      nowValue = JSONGetElement(~httpHeaderJSON; nowKey);
+      ~result = List(~result; Lower(nowKey) &":"& Trim(nowValue));
+      ~i = ~i + 1
+    ];
+    ~result & ¶
+  );
+
+  ~trimdHttpHeaderJSONKeys = If(
+    Right(~httpHeaderJSONKeys; 1) = ¶;
+    Left(~httpHeaderJSONKeys; Length(~httpHeaderJSONKeys) - 1);
+    ~httpHeaderJSONKeys
+  );
+  ~signedHeaders = Substitute(Lower(~trimdHttpHeaderJSONKeys); ¶; ";");
+  ~canonicalRequest =
+    ~httpMethod
+    & ¶ & ~path // CanonicalURI
+    & ¶ & ~query
+    & ¶ & ~canonicalHeaders
+    & ¶ & ~signedHeaders
+    & ¶ & ~contentSha256Hex;
+
+  // Create StringToSign
+  ~algorithm = "AWS4-HMAC-SHA256";
+  ~credentialScope = List(~requestData; ~region; ~service; "aws4_request");
+  ~credentialScope = Substitute(~credentialScope; ¶; "/");
+  ~hashedCanonicalRequest = Lower(HexEncode(CryptDigest(
+    TextEncode(~canonicalRequest; "utf-8"; 3);
+    "SHA256"
+  )));
+  ~stringToSign = List(
+    ~algorithm;
+    ~requestDateTime;
+    ~credentialScope;
+    ~hashedCanonicalRequest;
+  );
+  ~encodedStringToSign = TextEncode(~stringToSign; "utf-8"; 3);
+
+  // Create Signature
+  ~kSecret   = AWS.SecretAccessKey;
+  ~kDate     = CryptAuthCode(~requestData; "SHA256"; "AWS4" & ~kSecret);
+  ~kRegion   = CryptAuthCode(~region; "SHA256"; ~kDate);
+  ~kService  = CryptAuthCode(~service; "SHA256"; ~kRegion);
+  ~kSigning  = CryptAuthCode("aws4_request"; "SHA256"; ~kService);
+  ~signature = Lower(HexEncode(CryptAuthCode(~encodedStringToSign; "SHA256"; ~kSigning)));
+
+  // Create Authorization header
+  ~authorizationValue =
+    ~algorithm & " "
+    & "Credential=" & AWS.AccessKeyID & "/" & ~credentialScope & ", "
+    & "SignedHeaders=" & ~signedHeaders & ", "
+    & "Signature=" & ~signature;
+
+  // results
+  ~httpHeaderJSON = JSONSetElement(~httpHeaderJSON; "Authorization"; ~authorizationValue; JSONString);
+  ~curlHeaders = While(
+    [ ~keys = JSONListKeys(~httpHeaderJSON; "");
+      ~i = 1;
+      ~result = "" ];
+    ~i <= ValueCount(~keys);
+    [ nowKey = GetValue(~keys; ~i);
+      nowValue = JSONGetElement(~httpHeaderJSON; nowKey);
+      ~result = List(~result; "--header " & Quote(nowKey & ": " & nowValue));
+      ~i = ~i + 1];
+    ~result
+  );
+
+  // DEBUG
+  $DEBUG_Signatures = "";
+  $DEBUG_Signatures = JSONSetElement($DEBUG_Signatures; "stringToSign"; ~stringToSign; JSONString);
+  $DEBUG_Signatures = JSONSetElement($DEBUG_Signatures; "canonicalRequest"; ~canonicalRequest; JSONString);
+  $DEBUG_Signatures = JSONSetElement($DEBUG_Signatures; "signature"; ~signature; JSONString);
+  $DEBUG_Signatures = JSONSetElement($DEBUG_Signatures; "authorizationValue"; ~authorizationValue; JSONString);
+
+  $file = ~file;
+  ~curlOptions = List(
+    "-X " & ~httpMethod;
+    ~curlHeaders;
+    "--dump-header $responseHeader";
+    If(~forceSaveAsObject; "--FM-return-container-variable");
+    If(not IsEmpty($file); "--upload-file $file");
+  );
+_=0];
+  ~curlOptions
+)
