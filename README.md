@@ -22,12 +22,9 @@ It comes with a sample for ready-to-use S3 access.
 
 ## Files
 
-- Main formula(text)
-  [AWS Signature Version 4.fmfn](https://github.com/hazi/FileMaker-AwsSignature/blob/master/AWS%20Signature%20Version%204.fmfn)
-- Sample File
-  [AWS Signature Version 4.fmp12 (Download)](https://github.com/hazi/FileMaker-AwsSignature/raw/master/AWS%20Signature%20Version%204.fmp12)
+- Main formula: [AWS Signature Version 4.fmfn](https://github.com/hazi/FileMaker-AwsSignature/blob/master/AWS%20Signature%20Version%204.fmfn)
+- Sample File (Download): [AWS Signature Version 4.fmp12](https://github.com/hazi/FileMaker-AwsSignature/releases/latest/download/AWS.Signature.Version.4.fmp12.zip)
 
 ## License
 
 Licensed under the [BSD license](./LICENSE).
-
